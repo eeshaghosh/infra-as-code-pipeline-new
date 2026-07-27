@@ -31,3 +31,7 @@ module "ecs" {
   image = "358103606042.dkr.ecr.ap-south-1.amazonaws.com/infra-as-code-pipeline:v1"
 
 }
+
+module "monitoring" {
+  source = "./modules/monitoring"
+}

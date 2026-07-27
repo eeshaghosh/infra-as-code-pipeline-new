@@ -2,11 +2,6 @@ resource "aws_ecs_cluster" "main" {
   name = "ecs-demo-cluster"
 }
 
-resource "aws_cloudwatch_log_group" "ecs" {
-  name              = "/ecs/demo-app"
-  retention_in_days = 7
-}
-
 resource "aws_iam_role" "ecs_execution" {
   name = "ecsTaskExecutionRole"
 
@@ -93,7 +88,7 @@ resource "aws_ecs_task_definition" "app" {
         logDriver = "awslogs"
 
         options = {
-          awslogs-group         = aws_cloudwatch_log_group.ecs.name
+          awslogs-group         = "/ecs/demo-app"
           awslogs-region        = "ap-south-1"
           awslogs-stream-prefix = "ecs"
         }
