@@ -53,10 +53,10 @@ jobs:
         run: terraform -chdir=terraform validate
 
       - name: TFLint Init
-        run: tflint --init
+        run: tflint --init --chdir terraform
 
       - name: Run TFLint
-        run: tflint terraform
+        run: tflint --chdir terraform
 
 ################################################################################
 # Docker Build & Push
