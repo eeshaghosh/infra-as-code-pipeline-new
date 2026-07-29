@@ -1,15 +1,32 @@
-name: CI-CD Pipeline infra
+name: CI-CD Pipeline
 
 on:
-  push:
-    branches:
-      - main
   pull_request:
     branches:
       - main
 
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: infra-as-code-pipeline
+  ECS_CLUSTER: ecs-demo-cluster
+  ECS_SERVICE: ecs-demo-service
+  ECS_TASK_DEFINITION: ecs-demo-task
+
 jobs:
+
+################################################################################
+# Terraform Validation
+################################################################################
+
   terraform:
+    name: Terraform Validation
     runs-on: ubuntu-latest
 
     steps:
@@ -19,12 +36,15 @@ jobs:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Terraform Init
         run: terraform -chdir=terraform init
@@ -32,14 +52,26 @@ jobs:
       - name: Terraform Validate
         run: terraform -chdir=terraform validate
 
-      - name: Terraform Plan
-        run: terraform -chdir=terraform plan
+      - name: TFLint Init
+        run: tflint --init
+
+      - name: Run TFLint
+        run: tflint terraform
+
+################################################################################
+# Docker Build & Push
+################################################################################
 
   docker:
-    runs-on: ubuntu-latest
+    name: Build and Push Docker Image
     needs: terraform
+    runs-on: ubuntu-latest
+
+    outputs:
+      image: ${{ steps.image.outputs.image }}
 
     steps:
+
       - uses: actions/checkout@v4
 
       - name: Configure AWS Credentials
@@ -47,11 +79,110 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        run: |
-          aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin 358103606042.dkr.ecr.ap-south-1.amazonaws.com
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build Docker Image
-        run: docker build -t ecs-demo-app ./app
+        run: |
+          docker build -t $ECR_REPOSITORY:${{ github.sha }} ./app
+
+      - name: Tag Image
+        run: |
+          docker tag $ECR_REPOSITORY:${{ github.sha }} \
+          358103606042.dkr.ecr.ap-south-1.amazonaws.com/$ECR_REPOSITORY:${{ github.sha }}
+
+      - name: Push Image
+        run: |
+          docker push \
+          358103606042.dkr.ecr.ap-south-1.amazonaws.com/$ECR_REPOSITORY:${{ github.sha }}
+
+      - name: Save Image URI
+        id: image
+        run: |
+          echo "image=358103606042.dkr.ecr.ap-south-1.amazonaws.com/$ECR_REPOSITORY:${{ github.sha }}" >> $GITHUB_OUTPUT
+
+################################################################################
+# STAGING
+################################################################################
+
+  deploy-staging:
+
+    name: Deploy to Staging
+
+    if: github.event_name == 'pull_request'
+
+    needs: docker
+
+    runs-on: ubuntu-latest
+
+    environment:
+      name: staging
+
+    steps:
+
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy to ECS Staging
+        run: |
+          set -e
+
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --force-new-deployment
+
+################################################################################
+# PRODUCTION
+################################################################################
+
+  deploy-production:
+
+    name: Deploy to Production
+
+    if: github.ref == 'refs/heads/main'
+
+    needs: docker
+
+    runs-on: ubuntu-latest
+
+    environment:
+      name: production
+
+    steps:
+
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy to ECS Production
+        run: |
+          set -e
+
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --force-new-deployment
+
+      - name: Wait for Stable Deployment
+        run: |
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services $ECS_SERVICE
+
+      - name: Deployment Successful
+        run: echo "Production deployment completed successfully."
